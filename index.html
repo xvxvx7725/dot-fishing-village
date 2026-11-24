@@ -15,6 +15,9 @@
 <body>
 <canvas id="c" width="800" height="500"></canvas>
 <div id="help">도움말 <b>H</b> &nbsp;·&nbsp; 낚시꾼 정보 <b>C</b></div>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 <script>
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 ctx.imageSmoothingEnabled = false;
@@ -498,7 +501,10 @@ B=bonus();
 const fishRate=()=>save.aq.fish.reduce((a,f)=>a+rateOf(f),0)*(1+B.aq);
 const OFFLINE_SEC=Math.min((Date.now()-save.aq.ts)/1000,28800);
 { const el=Math.min((Date.now()-save.aq.ts)/60000,480); if(el>0) save.aq.pend+=fishRate()*el; }
-const persist=()=>{ try{ save.aq.ts=Date.now(); localStorage.setItem('fish-save',JSON.stringify(save)); }catch(e){} };
+// 온라인 상태 (아래 '온라인' 구역에서 사용)
+let mp={user:null,nick:'',skew:0,status:'',others:{},chat:[],rank:[],rankLoading:false,rankErr:'',market:[],visit:null,visitSwim:[],
+  presScene:null,presRef:null,presListRef:null,presCb:null,chatListRef:null,chatCb:null,mailRef:null,sendT:0,lastKey:'',lastSend:0,cloudT:0,dirty:false,busy:false};
+const persist=()=>{ mp.dirty=true; try{ save.aq.ts=Date.now(); localStorage.setItem('fish-save',JSON.stringify(save)); }catch(e){} };
 const bagCount=()=>save.bag.length;
 
 // ================= 오디오 =================
@@ -684,10 +690,14 @@ addEventListener('keydown',e=>{
   if(e.repeat) return;
   keys[e.code]=true;
   if(e.code==='Escape'){ if(menu) menu=null; else if(scene==='sea'&&state==='idle') returnHarbor(); return; }
+  if(e.code==='KeyO'){ if(menu==='online'||menu==='visit') menu=null; else if(!menu&&!(scene==='sea'&&state!=='idle'&&state!=='result')){ menu='online'; if(onlineTab===1) loadRank(); } return; }
   if(e.code==='KeyH'){ if(menu==='help') menu=null; else if(!menu&&!(scene==='sea'&&state!=='idle'&&state!=='result')) menu='help'; return; }
   if(e.code==='KeyC'){ if(menu==='char') menu=null; else if(!menu&&!(scene==='sea'&&state!=='idle'&&state!=='result')) menu='char'; return; }
   if(scene==='sea'){ if(e.code==='Space'&&!holding&&!menu){ holding=true; press(); } }
-  else if(!menu&&['KeyE','Enter','Space','ArrowUp'].includes(e.code)) interact();
+  else if(!menu&&['KeyE','Enter','Space','ArrowUp'].includes(e.code)){
+    if(e.code==='Enter'&&!nearDoor()&&mp.user&&mp.presScene) openInput('채팅 (Enter 전송 · Esc 취소)',sendChat,60);
+    else interact();
+  }
 });
 addEventListener('keyup',e=>{
   keys[e.code]=false;
@@ -713,9 +723,10 @@ function update(dt){
   if(fade>0) fade=Math.max(0,fade-dt*3);
   save.aq.pend+=fishRate()/60*dt;
   advanceTraps(dt);
+  mpTick(dt);
   saveT+=dt; if(saveT>3){ saveT=0; persist(); }
 
-  if(scene!=='sea'){ updatePlayer(dt); if(menu==='aqua') updateSwim(dt); return; }
+  if(scene!=='sea'){ updatePlayer(dt); if(menu==='aqua'||menu==='visit') updateSwim(dt); return; }
 
   particles.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=700*dt;p.l-=dt*1.2;});
   particles=particles.filter(p=>p.l>0);
@@ -798,7 +809,7 @@ function updatePlayer(dt){
   }
 }
 function updateSwim(dt){
-  for(const s of swim){
+  for(const s of (menu==='visit'?mp.visitSwim:swim)){
     const sw=s.f.s[0].length*4;
     s.x+=s.dir*s.sp*dt;
     if(s.x<72){ s.x=72; s.dir=1; }
@@ -867,10 +878,10 @@ function jobIcon(job,x,y,cell=4){
   JOB_GLYPH[job].forEach((row,r)=>{ for(let c=0;c<5;c++) if(row[c]==='#') P(c+2,r+2,'#ffffff'); });
 }
 // 직업별 캐릭터 장비 (전직 계통의 장비를 모두 착용)
-function jobGear(x,y,cell,flip){
+function jobGear(x,y,cell,flip,job){
   if(cell===G){ x=Math.round(x/G)*G; y=Math.round(y/G)*G; }
   const P=(c,r,col)=>{ const cc=flip?9-c:c; ctx.fillStyle=col; ctx.fillRect(Math.round(x+cc*cell),Math.round(y+r*cell),cell,cell); };
-  for(const j of lineage()){
+  for(const j of lineage(job||save.job)){
     if(j==='fisher'){ P(8,10,'#8b5a2b'); P(8,11,'#8b5a2b'); P(9,10,'#cfe8ff'); P(9,11,'#8b5a2b'); }
     else if(j==='hunter'){ for(let r=2;r<14;r++) P(0,r,'#6b4423'); P(0,1,'#dee2e6'); P(0,0,'#dee2e6'); }
     else if(j==='merchant'){ P(2,10,'#e9c46a'); P(2,11,'#c9a227'); P(1,11,'#e9c46a'); }
@@ -900,11 +911,11 @@ function spotThumb(i,x,y){
 }
 
 // ================= 그리기: 캐릭터(옷 반영) =================
-function drawMan(x,y,flip=false,cell=G){
-  const h=HATS[save.wear.hat], o=OUTFITS[save.wear.outfit];
+function drawMan(x,y,flip=false,cell=G,ov=null){
+  const h=HATS[ov?ov.hat:save.wear.hat]||HATS[0], o=OUTFITS[ov?ov.outfit:save.wear.outfit]||OUTFITS[0];
   const rows=[...h.rows,...SP.man.slice(3)];
   spr(rows,Object.assign({},MANPAL,o.pal,h.pal),x,y,cell,flip);
-  jobGear(x,y,cell,flip);
+  jobGear(x,y,cell,flip,ov?(JOBS[ov.job]?ov.job:'novice'):undefined);
 }
 
 // ================= 그리기: 배 =================
@@ -1372,6 +1383,7 @@ function drawVillage(){
   R(W-80,440,18,5,'#a9713a'); R(W-80,440,18,1,'#c98b4a'); R(W-52,460,1,5,'#6b4423');
   txt('항구 →',W-44,457,18,'#fff2cc','center','Galmuri9');
   drawNPCs();
+  drawOthers(424);
   drawPlayer(424);
 }
 function drawVillageOld(){
@@ -1416,6 +1428,7 @@ function drawRiver(){
   R(296,364,1,7,'#6b4423'); R(276,352,10,5,'#a9713a'); R(276,352,10,1,'#c98b4a');
   txt('낚시터',300,348,18,'#fff2cc','center','Galmuri9');
   txt('마을 →',W-12,384,18,'#14213d','right','Galmuri9');
+  drawOthers(420);
   drawPlayer(420);
 }
 // ================= 항구: 부두 · 관리소 · 크레인 · 통발 가게 · 뱃사람 =================
@@ -1504,6 +1517,7 @@ function drawHarbor(){
   R(430,356,15,4,'#a9713a'); R(430,356,15,1,'#c98b4a'); R(436,360,1,7,'#6b4423');
   boardText('출항 →',460,370,'#fff2cc');
   drawNPCs(HNPCS);
+  drawOthers(420);
   drawPlayer(420);
 }
 function harborLights(){
@@ -1869,10 +1883,19 @@ const HELP=[
   ['','판매가 x4 · 수족관 수익 x2.5 · 경험치 x3'],
   ['보호','이로치와 잠금한 물고기는 묶음 판매에서 빠져요'],
  ]],
+ ['온라인',[
+  ['로그인','온라인 버튼(O키)에서 구글 로그인'],
+  ['클라우드','30초마다 자동 저장, 다른 기기에서 이어하기'],
+  ['랭킹','레벨·도감·이로치 순위. 이름을 누르면 수족관 구경'],
+  ['실시간','마을·항구·강가에서 다른 플레이어가 보여요'],
+  ['채팅','Enter (문 앞에서는 E로 입장, 빈 곳에서 Enter)'],
+  ['거래소','물고기를 올리고 사고팔아요 (수수료 없음)'],
+  ['주의','닉네임·채팅만 공개돼요. 실명은 보이지 않아요'],
+ ]],
 ];
 function menuHelp(){
   panel('도움말');
-  HELP.forEach((h,i)=>button(h[0],236+i*112,56,104,32,()=>{helpTab=i;},true,helpTab===i?'#e07a1f':'#3a4a8a'));
+  HELP.forEach((h,i)=>button(h[0],190+i*96,56,88,32,()=>{helpTab=i;},true,helpTab===i?'#e07a1f':'#3a4a8a'));
   const rows=HELP[helpTab][1];
   card(60,108,672,324);
   rows.forEach(([k,v],i)=>{
@@ -2002,9 +2025,10 @@ function hud(){
   txt(`Lv.${save.lv}`,150,24,18,'#80ed99','left','Galmuri9');
   txt(loc,240,24,18,'#fff','left','Galmuri9');
   txt(`가방 ${bagCount()}`,350,24,18,'#fff','left','Galmuri9');
-  txt(`수족관 +${fishRate().toFixed(1)}/분`,450,24,18,'#8ecae6','left','Galmuri9');
+  txt(`수익 +${fishRate().toFixed(1)}/분`,440,24,18,'#8ecae6','left','Galmuri9');
   if(!(scene==='sea'&&state!=='idle'&&state!=='result'))
-  { button('?',632,4,36,28,()=>{ menu=menu==='help'?null:'help'; },true,'#2a9d8f');
+  { button('온라인',552,4,74,28,()=>{ menu=(menu==='online'||menu==='visit')?null:'online'; if(menu==='online'&&onlineTab===1) loadRank(); },true,mp.user?'#2a9d8f':'#555a6e');
+    button('?',632,4,36,28,()=>{ menu=menu==='help'?null:'help'; },true,'#2a9d8f');
     button('정보 [C]',676,4,116,28,()=>{ menu=menu==='char'?null:'char'; },true,'#6a4c93'); }
   // 경험치 바
   R(0,36,200,1,'#0b1020');
@@ -2032,6 +2056,9 @@ function draw(){
   }
   if(menu==='char') menuChar();
   if(menu==='help') menuHelp();
+  if(menu==='online') menuOnline();
+  if(menu==='visit') menuVisit();
+  drawChatLog();
   if(lvBanner){
     ctx.globalAlpha=Math.min(1,lvBanner.t);
     R(200,150,100,22,'#14213d'); R(204,154,98,20,'#ffd166'); R(208,158,96,18,'#fff8e1');
@@ -2043,6 +2070,331 @@ function draw(){
   if(fade>0) R(0,0,200,125,'#000',fade);
 }
 
+// ================= 온라인 (Firebase 로그인 · 클라우드 저장 · 랭킹 · 실시간 마을 · 거래소) =================
+const FBCFG={apiKey:'AIzaSyDiBcTcmXwGRZL8D9DsaLyoSQgCvIT2glM',authDomain:'dot-fishing-village.firebaseapp.com',
+  databaseURL:'https://dot-fishing-village-default-rtdb.asia-southeast1.firebasedatabase.app',projectId:'dot-fishing-village',appId:'1:376003131681:web:473eecce79e304b368a660'};
+let FB=null, onlineTab=0, rankKey='lv', mktTab=0, mktMult=1.5, mktPage=0, mktBusy=false, confirmPull=false;
+const SERVER=()=>firebase.database.ServerValue.TIMESTAMP;
+const nowS=()=>Date.now()+(mp.skew||0);
+const fresh=p=>nowS()-p.t<25000;
+const instOf=a=>({n:a[0],s:a[1],v:a[2],q:a[3],sh:a[4]?1:0});
+const jstr=o=>{ try{ return JSON.stringify(o); }catch(e){ return ''; } };
+function mpInit(){
+  try{
+    if(typeof firebase==='undefined'){ mp.status='온라인을 쓸 수 없어요 (연결 실패)'; return; }
+    firebase.initializeApp(FBCFG);
+    FB={auth:firebase.auth(),db:firebase.database()};
+    FB.db.ref('.info/serverTimeOffset').on('value',s=>{ mp.skew=s.val()||0; });
+    FB.auth.onAuthStateChanged(onUser);
+    mp.status='로그인하면 이어하기·랭킹·거래를 쓸 수 있어요';
+  }catch(e){ mp.status='온라인 초기화 실패'; }
+}
+const progressScore=x=>(x.lv||1)*1e6+(x.xp||0)+Object.values(x.caught||{}).reduce((a,b)=>a+b,0)*10+Math.floor((x.gold||0)/100);
+async function onUser(u){
+  if(!u){ stopListen(); mp.user=null; mp.status='로그아웃됨'; return; }
+  mp.user=u;
+  try{
+    const ns=await FB.db.ref('users/'+u.uid+'/n').once('value');
+    let nick=ns.val(); try{ nick=nick||localStorage.getItem('fish-nick'); }catch(e){}
+    mp.nick=nick||('낚시꾼'+String(Math.floor(1000+Math.random()*9000)));
+    try{ localStorage.setItem('fish-nick',mp.nick); }catch(e){}
+    const cs=await FB.db.ref('saves/'+u.uid).once('value');
+    if(cs.exists()){
+      const c=JSON.parse(cs.val());
+      if(progressScore(c)>progressScore(save)){   // 클라우드가 더 진행됨 → 불러오고 새로고침
+        removeEventListener('beforeunload',persist);
+        try{ localStorage.setItem('fish-save',cs.val()); }catch(e){}
+        location.reload(); return;
+      }
+      if(progressScore(c)<progressScore(save)) await cloudPush();
+    } else await cloudPush();
+    await pushProfile();
+    listenMail();
+    mp.status='온라인: '+mp.nick;
+    say('로그인했어요! '+mp.nick,2.5);
+  }catch(e){ mp.status='동기화 오류: '+(e.code||e.message); }
+}
+function mpLogin(){
+  if(!FB) return;
+  FB.auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e=>{
+    if(e&&(e.code==='auth/popup-blocked')) FB.auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider());
+    else say('로그인 실패: '+((e&&e.code)||'오류'),3);
+  });
+}
+function mpLogout(){ if(FB){ stopListen(); FB.auth.signOut(); } }
+function cloudPush(){ return FB.db.ref('saves/'+mp.user.uid).set(jstr(save)).catch(()=>{}); }
+function profileData(){
+  return {n:mp.nick,lv:save.lv,job:save.job,dex:Object.keys(save.caught).length,shc:Object.keys(save.shinyCaught).length,
+    aq:save.aq.fish.slice(0,12).map(f=>[f.n,f.s,f.v,f.q,f.sh?1:0]),w:[save.wear.hat,save.wear.outfit,save.wear.skin],r:+fishRate().toFixed(1),t:SERVER()};
+}
+function pushProfile(){ return FB.db.ref('users/'+mp.user.uid).set(profileData()).catch(()=>{}); }
+function listenMail(){
+  if(mp.mailRef) mp.mailRef.off();
+  mp.mailRef=FB.db.ref('mail/'+mp.user.uid);
+  mp.mailRef.on('child_added',s=>{ const m=s.val(); if(!m) return;
+    save.gold+=m.g; persist(); say(`거래소: ${m.f} 판매 +${m.g}원 (${m.bn})`,4); beep(988,.1,'triangle'); s.ref.remove().catch(()=>{}); });
+}
+function detachScene(){
+  if(mp.presListRef) mp.presListRef.off('value',mp.presCb);
+  if(mp.chatListRef) mp.chatListRef.off('value',mp.chatCb);
+  if(mp.presRef) mp.presRef.remove().catch(()=>{});
+  mp.presListRef=mp.chatListRef=mp.presRef=null; mp.presScene=null; mp.others={}; mp.chat=[];
+}
+function stopListen(){ detachScene(); if(mp.mailRef){ mp.mailRef.off(); mp.mailRef=null; } }
+function sendPresence(){
+  if(!mp.presRef) return;
+  mp.presRef.set({n:mp.nick,x:Math.round(player.x),d:player.dir,h:save.wear.hat,o:save.wear.outfit,j:save.job,t:SERVER()}).catch(()=>{});
+  mp.lastSend=Date.now(); mp.lastKey=Math.round(player.x)+'|'+player.dir;
+}
+function switchPresence(sc){
+  detachScene();
+  mp.presScene=sc;
+  if(!sc||!mp.user) return;
+  mp.presRef=FB.db.ref('presence/'+sc+'/'+mp.user.uid);
+  mp.presRef.onDisconnect().remove();
+  sendPresence();
+  mp.presListRef=FB.db.ref('presence/'+sc);
+  mp.presCb=s=>{
+    const v=s.val()||{}, o={};
+    for(const [uid,p] of Object.entries(v)){ if(uid===mp.user.uid) continue; const old=mp.others[uid]; o[uid]=Object.assign({cx:old?old.cx:p.x},p); }
+    mp.others=o;
+  };
+  mp.presListRef.on('value',mp.presCb);
+  mp.chatListRef=FB.db.ref('chat/'+sc).orderByChild('t').limitToLast(30);
+  mp.chatCb=s=>{
+    const a=[]; s.forEach(c=>{ a.push(Object.assign({k:c.key},c.val())); });
+    mp.chat=a;
+    a.forEach(m=>{ if(m.t&&nowS()-m.t>3700000) FB.db.ref('chat/'+sc+'/'+m.k).remove().catch(()=>{}); });
+  };
+  mp.chatListRef.on('value',mp.chatCb);
+}
+function mpTick(dt){
+  if(!FB||!mp.user) return;
+  const sc=(scene==='village'||scene==='harbor'||scene==='river')?scene:null;
+  if(sc!==mp.presScene) switchPresence(sc);
+  if(sc){ mp.sendT+=dt; if(mp.sendT>.35){ mp.sendT=0; if(Math.round(player.x)+'|'+player.dir!==mp.lastKey||Date.now()-mp.lastSend>8000) sendPresence(); } }
+  mp.cloudT+=dt; if(mp.cloudT>30){ mp.cloudT=0; if(mp.dirty){ mp.dirty=false; cloudPush(); pushProfile(); } }
+}
+function sendChat(text){
+  text=(text||'').trim().slice(0,60); if(!text||!mp.presScene||!mp.user) return;
+  FB.db.ref('chat/'+mp.presScene).push({u:mp.user.uid,n:mp.nick,m:text,t:SERVER()}).catch(()=>say('채팅을 보내지 못했어요'));
+}
+// ---- 입력창(채팅·닉네임)
+const ci=document.createElement('input');
+ci.type='text'; ci.autocomplete='off';
+Object.assign(ci.style,{position:'fixed',display:'none',zIndex:'50',font:'18px Galmuri9,sans-serif',padding:'8px 12px',width:'min(70vw,520px)',boxSizing:'border-box',background:'#fff8e1',color:'#14213d',border:'4px solid #14213d',outline:'none',borderRadius:'0'});
+document.body.appendChild(ci);
+let inputCb=null;
+function openInput(ph,cb,max=60){
+  ci.placeholder=ph; ci.maxLength=max; ci.value='';
+  const r=cv.getBoundingClientRect();
+  ci.style.left=(r.left+r.width/2)+'px'; ci.style.top=(r.bottom-64)+'px'; ci.style.transform='translateX(-50%)'; ci.style.display='block';
+  inputCb=cb; keys={}; holding=false; ci.focus();
+}
+function closeInput(){ ci.style.display='none'; ci.blur(); inputCb=null; }
+ci.addEventListener('keydown',e=>{ e.stopPropagation(); if(e.key==='Enter'){ const v=ci.value, cb=inputCb; closeInput(); if(cb) cb(v); } else if(e.key==='Escape'){ closeInput(); } });
+ci.addEventListener('keyup',e=>e.stopPropagation());
+// ---- 다른 플레이어 · 말풍선 · 채팅 로그
+function nameTag(s,x,y,col){ ctx.font='18px Galmuri9, sans-serif'; ctx.textAlign='center'; ctx.globalAlpha=.9; ctx.fillStyle='#0b1020'; ctx.fillText(s,x+2,y+2); ctx.fillStyle=col; ctx.fillText(s,x,y); ctx.globalAlpha=1; ctx.textAlign='left'; }
+function chatBubble(uid,x,top){
+  const m=[...mp.chat].reverse().find(c=>c.u===uid&&c.t&&nowS()-c.t<7000); if(!m) return;
+  ctx.font='18px Galmuri9, sans-serif';
+  const bw=Math.ceil((ctx.measureText(m.m).width+24)/4)*4, bx=Math.max(8,Math.min(W-bw-8,x-bw/2)), by=top-44;
+  R(bx,by,bw/4,9,'#14213d'); R(bx+4,by+4,bw/4-2,7,'#ffffff'); R(x-4,by+36,2,1,'#14213d'); R(x-4,by+32,2,1,'#ffffff');
+  ctx.textAlign='center'; ctx.fillStyle='#14213d'; ctx.fillText(m.m,bx+bw/2,by+25); ctx.textAlign='left';
+}
+function drawOthers(feet){
+  if(!FB||!mp.user||!mp.presScene) return;
+  for(const [uid,p] of Object.entries(mp.others)){
+    if(!fresh(p)) continue;
+    p.cx+=(p.x-p.cx)*0.2;
+    const mv=Math.abs(p.x-p.cx)>2, top=feet-56-((mv&&Math.floor(t*8)%2)?4:0);
+    drawMan(p.cx-20,top,p.d<0,G,{hat:p.h|0,outfit:p.o|0,job:p.j});
+    nameTag(p.n||'?',p.cx,feet+18,'#cfe8ff'); chatBubble(uid,p.cx,top);
+  }
+  nameTag(mp.nick,player.x,feet+18,'#ffd166'); chatBubble(mp.user.uid,player.x,feet-56);
+}
+function drawChatLog(){
+  if(!FB||!mp.user||!mp.presScene||menu) return;
+  mp.chat.slice(-5).forEach((m,i)=>{ ctx.globalAlpha=nowS()-m.t>20000?.5:.95; txt(`${m.n}: ${m.m}`,14,66+i*24,18,m.u===mp.user.uid?'#ffd166':'#ffffff','left','Galmuri9'); ctx.globalAlpha=1; });
+}
+// ---- 온라인 메뉴
+function menuOnline(){
+  panel('온라인');
+  ['계정','랭킹','거래소'].forEach((n,i)=>button(n,236+i*104,56,96,32,()=>{ onlineTab=i; mktPage=0; if(i===1) loadRank(); if(i===2) loadMarket(); },true,onlineTab===i?'#e07a1f':'#3a4a8a'));
+  [tabAcct,tabRank,tabMarket][onlineTab]();
+}
+function changeNick(){
+  openInput('새 닉네임 (최대 12자)',v=>{
+    const n=(v||'').trim().slice(0,12); if(!n) return;
+    mp.nick=n; try{ localStorage.setItem('fish-nick',n); }catch(e){}
+    pushProfile(); if(mp.presRef) sendPresence(); say('닉네임: '+n);
+  },12);
+}
+function tabAcct(){
+  card(60,108,672,336);
+  if(!FB){ txt('온라인 기능을 불러오지 못했어요.',84,160,22,'#ef476f'); txt('인터넷 연결을 확인하고 새로고침해 보세요.',84,196,18,'#bcd','left','Galmuri9'); return; }
+  if(!mp.user){
+    txt('구글 계정으로 로그인하면',84,150,22,'#ffffff');
+    ['· 다른 기기에서도 이어서 플레이 (클라우드 저장)','· 레벨·도감·이로치 랭킹, 남의 수족관 구경','· 마을·항구·강가에서 다른 플레이어와 만나고 채팅','· 물고기 거래소에서 사고팔기'].forEach((s,i)=>txt(s,84,190+i*30,18,'#bcd','left','Galmuri9'));
+    button('구글로 로그인',84,330,240,44,mpLogin,true,'#2a9d8f');
+    txt('닉네임은 로그인 뒤 직접 정해요. 실명은 보이지 않아요.',84,408,18,'#8c93b0','left','Galmuri9');
+    return;
+  }
+  txt(`닉네임  ${mp.nick}`,84,152,22,'#ffd166');
+  button('바꾸기',440,126,100,34,changeNick);
+  txt(mp.status,84,186,18,'#80ed99','left','Galmuri9');
+  const near=Object.values(mp.others).filter(fresh).length;
+  txt(mp.presScene?`이 장소의 다른 플레이어 ${near}명 · 채팅은 Enter`:'마을·항구·강가에서 다른 플레이어를 만날 수 있어요',84,216,18,'#bcd','left','Galmuri9');
+  button('클라우드에 저장',84,250,220,40,()=>{ cloudPush().then(()=>{ pushProfile(); say('클라우드에 저장했어요'); }); },true,'#2a9d8f');
+  button(confirmPull?'정말 덮어쓸까요?':'클라우드에서 불러오기',324,250,260,40,()=>{
+    if(!confirmPull){ confirmPull=true; return; }
+    FB.db.ref('saves/'+mp.user.uid).once('value').then(s=>{ if(!s.exists()){ say('저장된 데이터가 없어요'); confirmPull=false; return; }
+      removeEventListener('beforeunload',persist); try{ localStorage.setItem('fish-save',s.val()); }catch(e){} location.reload(); });
+  },true,confirmPull?'#c1121f':'#3a4a8a');
+  button('로그아웃',84,306,160,40,mpLogout,true,'#6a4c93');
+  txt('30초마다 자동으로 저장돼요.',84,384,18,'#8c93b0','left','Galmuri9');
+  txt('불러오면 이 기기의 진행 상황이 클라우드 내용으로 바뀌어요.',84,410,18,'#8c93b0','left','Galmuri9');
+}
+function loadRank(){
+  if(!FB||!mp.user){ mp.rank=[]; return; }
+  mp.rankLoading=true; mp.rankErr='';
+  FB.db.ref('users').orderByChild(rankKey).limitToLast(10).once('value').then(s=>{
+    const a=[]; s.forEach(c=>a.push(Object.assign({uid:c.key},c.val())));
+    a.sort((x,y)=>(y[rankKey]-x[rankKey])||(y.lv-x.lv)); mp.rank=a; mp.rankLoading=false;
+  }).catch(e=>{ mp.rankLoading=false; mp.rankErr=e.code||'error'; });
+}
+function tabRank(){
+  if(!mp.user){ txt('로그인하면 랭킹을 볼 수 있어요',84,200,22,'#cfd8ff'); return; }
+  [['lv','레벨'],['dex','도감'],['shc','이로치']].forEach(([k,n],i)=>button(n,60+i*112,100,104,32,()=>{ rankKey=k; loadRank(); },true,rankKey===k?'#e07a1f':'#3a4a8a'));
+  button('새로고침',620,100,112,32,loadRank);
+  if(mp.rankLoading) txt('불러오는 중...',84,190,18,'#bcd','left','Galmuri9');
+  if(mp.rankErr) txt('불러오지 못했어요: '+mp.rankErr,84,190,18,'#ef476f','left','Galmuri9');
+  mp.rank.forEach((u,i)=>{
+    const y=144+i*31;
+    card(60,y,672,28);
+    if(mouse.x>=60&&mouse.x<732&&mouse.y>=y&&mouse.y<y+28) R(60,y,168,7,'#ffffff',.12);
+    txt(`${i+1}`,76,y+20,18,i<3?'#ffd166':'#bcd','left','Galmuri9');
+    txt(u.n||'?',120,y+20,18,u.uid===(mp.user&&mp.user.uid)?'#ffd166':'#ffffff','left','Galmuri9');
+    txt(`Lv.${u.lv}`,330,y+20,18,'#80ed99','left','Galmuri9');
+    txt((JOBS[u.job]||JOBS.novice).n,410,y+20,18,'#bcd','left','Galmuri9');
+    txt(rankKey==='lv'?`Lv.${u.lv}`:rankKey==='dex'?`도감 ${u.dex}종`:`이로치 ${u.shc}종`,716,y+20,18,'#ffd166','right','Galmuri9');
+    btns.push({x:60,y,w:672,h:28,fn:()=>openVisit(u.uid)});
+  });
+  if(!mp.rank.length&&!mp.rankLoading&&!mp.rankErr) txt('아직 아무도 없어요',84,190,18,'#8c93b0','left','Galmuri9');
+  txt('이름을 누르면 그 사람의 수족관을 구경해요',60,468,18,'#8ecae6','left','Galmuri9');
+}
+function openVisit(uid){
+  FB.db.ref('users/'+uid).once('value').then(s=>{
+    if(!s.exists()) return;
+    mp.visit=Object.assign({uid},s.val());
+    mp.visitSwim=(mp.visit.aq||[]).map(instOf).filter(i=>fishOf(i)).map(inst=>{ const f=fishOf(inst);
+      return {f,inst,x:80+Math.random()*300,by:110+Math.random()*Math.max(10,150-f.s.length*4),dir:Math.random()<.5?-1:1,sp:14+Math.random()*22,ph:Math.random()*6}; });
+    menu='visit';
+  }).catch(()=>say('불러오지 못했어요'));
+}
+function menuVisit(){
+  const v=mp.visit; if(!v){ menu='online'; return; }
+  panel(`${v.n}의 수족관`);
+  button('뒤로',600,52,88,32,()=>{ menu='online'; },true,'#3a4a8a');
+  const T={x:64,y:96,w:480,h:200};
+  R(T.x-4,T.y-4,T.w/4+2,T.h/4+2,'#0b1020');
+  ['#3aa7de','#339bd0','#2c8cc0','#267db0','#206ea0'].forEach((c,i)=>R(T.x,T.y+i*36,T.w/4,10,c));
+  R(T.x,T.y+T.h-16,T.w/4,4,'#e6cf9a'); R(T.x,T.y+T.h-16,T.w/4,1,'#f4e3b8');
+  for(const px of [100,230,380,500]){ R(px,T.y+T.h-56,1,10,'#2d8a3e'); R(px+4,T.y+T.h-44,1,7,'#3fae52'); }
+  let hov=null;
+  mp.visitSwim.forEach(s=>{
+    const sy=T.y+s.by-96+Math.sin(t*1.5+s.ph)*6, sw=s.f.s[0].length*4, sh=s.f.s.length*4;
+    drawFish(s.inst,s.x,sy,G,s.dir>0);
+    if(mouse.x>=s.x&&mouse.x<s.x+sw&&mouse.y>=sy&&mouse.y<sy+sh+12) hov=s;
+  });
+  if(!mp.visitSwim.length) txt('수조가 비어 있어요',T.x+T.w/2,T.y+T.h/2,22,'#fff','center');
+  txt(hov?`${hov.f.n} ${ivText(hov.inst)} [${ivGrade(hov.inst)}]${hov.inst.sh?' ★이로치':''}`:'물고기에 마우스를 올려 보세요',T.x,T.y+T.h+22,18,hov?'#ffd166':'#8ecae6','left','Galmuri9');
+  card(564,100,168,196);
+  txt(`Lv.${v.lv}`,576,128,22,'#80ed99');
+  txt((JOBS[v.job]||JOBS.novice).n,576,156,18,'#fff','left','Galmuri9');
+  txt(`도감 ${v.dex}/${FISH.length}`,576,190,18,'#bcd','left','Galmuri9');
+  txt(`이로치 ${v.shc}종`,576,218,18,'#ffd166','left','Galmuri9');
+  txt(`수익 +${v.r||0}/분`,576,246,18,'#8ecae6','left','Galmuri9');
+  if(v.w){ drawMan(676,116,false,3,{hat:v.w[0]|0,outfit:v.w[1]|0,job:v.job}); }
+  txt('이 수족관의 물고기들이에요',60,342,18,'#bcd','left','Galmuri9');
+}
+// ---- 거래소
+function loadMarket(){
+  if(!FB||!mp.user) return;
+  FB.db.ref('market').orderByChild('t').limitToLast(40).once('value').then(s=>{
+    const a=[]; s.forEach(c=>a.push(Object.assign({id:c.key},c.val()))); a.sort((x,y)=>y.t-x.t); mp.market=a;
+  }).catch(()=>say('거래소를 불러오지 못했어요'));
+}
+function buyListing(l){
+  if(mktBusy||save.gold<l.p) return;
+  mktBusy=true;
+  FB.db.ref('market/'+l.id+'/b').transaction(c=>c===null?mp.user.uid:undefined).then(r=>{
+    if(!r.committed){ say('이미 팔렸어요'); mktBusy=false; loadMarket(); return; }
+    save.gold-=l.p; save.bag.push({n:l.f.n,s:l.f.s,v:l.f.v,q:l.f.q,sh:l.f.sh?1:0}); persist();
+    return FB.db.ref('mail/'+l.s+'/'+l.id).set({g:l.p,f:l.f.n,bn:mp.nick,t:SERVER()})
+      .then(()=>FB.db.ref('market/'+l.id).remove())
+      .then(()=>{ say(`${l.f.n} 구매 완료! -${l.p}원`,3); beep(880,.1,'triangle'); mktBusy=false; loadMarket(); });
+  }).catch(e=>{ say('구매 실패: '+((e&&e.code)||'오류')); mktBusy=false; loadMarket(); });
+}
+function cancelListing(l){
+  if(mktBusy) return; mktBusy=true;
+  FB.db.ref('market/'+l.id).remove().then(()=>{ save.bag.push({n:l.f.n,s:l.f.s,v:l.f.v,q:l.f.q,sh:l.f.sh?1:0}); persist(); say('등록을 취소했어요'); mktBusy=false; loadMarket(); })
+    .catch(()=>{ say('이미 팔렸어요'); mktBusy=false; loadMarket(); });
+}
+function listFish(f){
+  if(mktBusy||save.bag.indexOf(f)<0) return;
+  if(mp.market.filter(l=>l.s===mp.user.uid).length>=5){ say('등록은 최대 5개예요'); return; }
+  const price=Math.max(1,Math.round(sellOne(f)*mktMult));
+  mktBusy=true;
+  const ref=FB.db.ref('market').push();
+  ref.set({s:mp.user.uid,sn:mp.nick,f:{n:f.n,s:f.s,v:f.v,q:f.q,sh:f.sh?1:0},p:price,t:SERVER()}).then(()=>{
+    const i=save.bag.indexOf(f); if(i>=0) save.bag.splice(i,1); persist();
+    say(`${f.n} 등록! ${price}원`,3); mktBusy=false; loadMarket();
+  }).catch(e=>{ say('등록 실패: '+((e&&e.code)||'오류')); mktBusy=false; });
+}
+function tabMarket(){
+  if(!mp.user){ txt('로그인하면 거래소를 쓸 수 있어요',84,200,22,'#cfd8ff'); return; }
+  ['둘러보기','내 물고기 등록'].forEach((n,i)=>button(n,60+i*148,100,140,32,()=>{ mktTab=i; mktPage=0; if(i===0) loadMarket(); },true,mktTab===i?'#e07a1f':'#3a4a8a'));
+  if(mktTab===0){
+    button('새로고침',620,100,112,32,loadMarket);
+    const list=mp.market, pages=Math.max(1,Math.ceil(list.length/8)); if(mktPage>=pages) mktPage=pages-1;
+    if(pages>1){ button('◀',500,100,40,32,()=>{ mktPage=(mktPage+pages-1)%pages; }); button('▶',548,100,40,32,()=>{ mktPage=(mktPage+1)%pages; }); }
+    if(!list.length) txt('올라온 물고기가 없어요. 첫 번째로 등록해 보세요!',84,200,18,'#8c93b0','left','Galmuri9');
+    list.slice(mktPage*8,mktPage*8+8).forEach((l,k)=>{
+      const x=60+(k%2)*340, y=144+Math.floor(k/2)*78, f=l.f, inst={n:f.n,s:f.s,v:f.v,q:f.q,sh:f.sh?1:0}, sp=fishOf(inst);
+      if(!sp) return;
+      card(x,y,332,72);
+      if(inst.sh) R(x,y,83,1,'#ffd166',.7);
+      drawFish(inst,x+8+(20-sp.s[0].length),y+36-sp.s.length,2);
+      const gr=ivGrade(inst);
+      txt2(f.n,gr+(inst.sh?' ★':''),x+60,y+22,inst.sh?'#ffd166':'#fff',GRADE_COL[gr]);
+      txt(ivText(inst),x+60,y+44,18,'#bcd','left','Galmuri9');
+      txt(l.sn,x+60,y+64,18,'#8c93b0','left','Galmuri9');
+      if(l.b) button('판매중',x+332-112,y+18,100,34,()=>{},false);
+      else if(l.s===mp.user.uid) button('취소',x+332-112,y+18,100,34,()=>cancelListing(l),true,'#6a4c93');
+      else button(`${l.p}원`,x+332-112,y+18,100,34,()=>buyListing(l),save.gold>=l.p,'#e07a1f');
+    });
+  } else {
+    txt('가격 배수',420,124,18,'#bcd','left','Galmuri9');
+    [1.5,2,3,5].forEach((m,i)=>button(`x${m}`,520+i*52,100,48,32,()=>{ mktMult=m; },true,mktMult===m?'#e07a1f':'#3a4a8a'));
+    const arr=save.bag.slice().sort((a,b)=>(b.sh-a.sh)||(sellOne(b)-sellOne(a)));
+    const pages=Math.max(1,Math.ceil(arr.length/10)); if(mktPage>=pages) mktPage=pages-1;
+    if(pages>1){ button('◀',360,100,40,32,()=>{ mktPage=(mktPage+pages-1)%pages; }); button('▶',404,100,40,32,()=>{ mktPage=(mktPage+1)%pages; }); }
+    if(!arr.length) txt('가방이 비어 있어요',84,200,18,'#8c93b0','left','Galmuri9');
+    arr.slice(mktPage*10,mktPage*10+10).forEach((f,k)=>{
+      const x=60+(k%2)*340, y=146+Math.floor(k/2)*58, sp=fishOf(f), gr=ivGrade(f);
+      card(x,y,332,50);
+      if(f.sh) R(x,y,83,1,'#ffd166',.7);
+      drawFish(f,x+6+(20-sp.s[0].length),y+25-sp.s.length,2);
+      txt2(f.n,gr+(f.sh?' ★':''),x+56,y+20,f.sh?'#ffd166':'#fff',GRADE_COL[gr]);
+      txt(ivText(f),x+56,y+42,18,'#bcd','left','Galmuri9');
+      button(`등록 ${Math.max(1,Math.round(sellOne(f)*mktMult))}`,x+332-124,y+8,116,34,()=>listFish(f),true,'#e07a1f');
+    });
+    txt('올린 물고기는 팔리기 전까지 취소할 수 있어요 (수수료 없음)',60,468,18,'#8ecae6','left','Galmuri9');
+  }
+}
+
 let last=performance.now();
 function loop(now){
   const dt=Math.min(0.05,(now-last)/1000); last=now;
@@ -2050,6 +2402,7 @@ function loop(now){
 }
 syncSwim();
 advanceTraps(OFFLINE_SEC);
+mpInit();
 if(!save.helpSeen){ menu='help'; save.helpSeen=true; persist(); }
 requestAnimationFrame(loop);
 addEventListener('beforeunload',persist);
