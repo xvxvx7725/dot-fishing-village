@@ -7,14 +7,14 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@latest/dist/galmuri.css">
 <style>
   html,body{margin:0;height:100%;background:#14213d;color:#fff;font-family:Galmuri11,"Apple SD Gothic Neo","Malgun Gothic",sans-serif}
-  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
-  canvas{image-rendering:pixelated;border:4px solid #0b1020;max-width:96vw;touch-action:none;cursor:pointer;background:#5fb4e8}
-  #help{font-size:13px;opacity:.85;text-align:center;line-height:1.6;padding:0 12px}
+  body{overflow:hidden}
+  #c{display:none}
+  #screen{position:fixed;left:0;top:0;width:100vw;height:100vh;display:block;image-rendering:pixelated;touch-action:none;cursor:pointer;background:#14213d}
 </style>
 </head>
 <body>
 <canvas id="c" width="800" height="500"></canvas>
-<div id="help">도움말 <b>H</b> &nbsp;·&nbsp; 낚시꾼 정보 <b>C</b></div>
+<canvas id="screen"></canvas>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
@@ -22,6 +22,24 @@
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 const W = 800, H = 500, WATER = 212, G = 4;
+// ---- 화면 꽉 채우기: 게임은 800x500으로 그리고, 창 크기에 맞춰 키운 뒤 남는 가장자리는 끝 한 줄을 늘려서 채운다
+const sv=document.getElementById('screen'), sx=sv.getContext('2d');
+let view={s:1,ox:0,oy:0,dpr:1};
+function resizeScreen(){
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  sv.width=Math.max(1,Math.round(innerWidth*dpr)); sv.height=Math.max(1,Math.round(innerHeight*dpr));
+  let s=Math.min(sv.width/W,sv.height/H); if(s>=2) s=Math.floor(s*4)/4;      // 확대 배율은 0.25 단위로 맞춰 도트를 또렷하게
+  view={s,dpr,ox:Math.round((sv.width-W*s)/2),oy:Math.round((sv.height-H*s)/2)};
+}
+function blit(){
+  const dw=Math.round(W*view.s), dh=Math.round(H*view.s), ox=view.ox, oy=view.oy;
+  sx.imageSmoothingEnabled=false;
+  sx.fillStyle='#14213d'; sx.fillRect(0,0,sv.width,sv.height);
+  if(ox>0){ sx.drawImage(cv,0,0,1,H,0,oy,ox+1,dh); sx.drawImage(cv,W-1,0,1,H,ox+dw-1,oy,sv.width-(ox+dw)+1,dh); }
+  if(oy>0){ sx.drawImage(cv,0,50,W,1,ox,0,dw,oy+1); sx.drawImage(cv,0,H-1,W,1,ox,oy+dh-1,dw,sv.height-(oy+dh)+1); }
+  sx.drawImage(cv,0,0,W,H,ox,oy,dw,dh);
+}
+addEventListener('resize',resizeScreen); resizeScreen();
 try { document.fonts.load('22px Galmuri11'); document.fonts.load('18px Galmuri9'); } catch(e){}
 
 // ================= 스프라이트 =================
@@ -70,6 +88,7 @@ const SP = {
 };
 const R_PAL = {r:'#e63946', y:'#ffd60a', c:'#dbeefa'};
 const MANPAL = {1:'#e63946',2:'#ffd6a5',3:'#3a5a9b',4:'#f2c94c'};
+const SKINTONES=['#ffd6a5','#f1c27d','#c68642','#8d5524','#ffc4c4'];
 
 function spr(rows, pal, x, y, cell=G, flip=false, alpha=1){
   if(cell===G){ x=Math.round(x/G)*G; y=Math.round(y/G)*G; }
@@ -386,14 +405,14 @@ const SKILLS=[
 const STAT_N={str:'힘',sen:'감각',foc:'집중',luk:'행운'};
 const HATS=[
  {n:'밀짚모자',price:0,   rows:["..kkkkkk..",".k444444k.","kkkkkkkkkk"],pal:{4:'#f2c94c'},b:{}},
- {n:'털 비니', price:100, rows:["..kkkkkk..",".k444444k.",".kkkkkkkk."],pal:{4:'#e63946'},b:{}},
+ {n:'털 비니', price:0, rows:["..kkkkkk..",".k444444k.",".kkkkkkkk."],pal:{4:'#e63946'},b:{}},
  {n:'선장 모자',price:500, rows:["..kkkkkk..",".kwwwwwwk.","k55555555k"],pal:{5:'#1d3557'},b:{price:.02}},
  {n:'해적 모자',price:1500,rows:["..kkkkkk..",".k444444k.","kkk4ww4kkk"],pal:{4:'#7b2cbf'},b:{xp:.03}},
  {n:'왕관',    price:5000,rows:["..k.kk.k..",".kyykkyyk.","kkyyyyyykk"],pal:{},b:{luck:.05}},
 ];
 const OUTFITS=[
  {n:'빨간 셔츠', price:0,   pal:{1:'#e63946',3:'#3a5a9b'},b:{}},
- {n:'파란 셔츠', price:80,  pal:{1:'#3a86ff',3:'#3a5a9b'},b:{}},
+ {n:'파란 셔츠', price:0, pal:{1:'#3a86ff',3:'#3a5a9b'},b:{}},
  {n:'낚시 조끼', price:400, pal:{1:'#6a994e',3:'#7f5539'},b:{hook:.05}},
  {n:'어부 방수복',price:1200,pal:{1:'#ffd60a',3:'#e9a03b'},b:{drain:.03}},
  {n:'턱시도',   price:4000,pal:{1:'#2b2d42',3:'#2b2d42'},b:{price:.03}},
@@ -418,7 +437,7 @@ let B={bar:0,wait:0,hook:0,luck:0,price:0,aq:0,xp:0,drain:0,cap:0,info:0};
 // ================= 저장 =================
 const DEF=()=>({gold:0,caught:{},best:0,bag:[],shinyCaught:{},bestIv:{},rod:0,boat:0,aq:{fish:[],cap:3,pend:0,ts:Date.now()},
   lv:1,xp:0,sp:0,job:'novice',skills:{},stats:{str:1,sen:1,foc:1,luk:1},
-  wear:{hat:0,outfit:0,skin:0},own:{hat:[0],outfit:[0],skin:[0]},traps:[],ver:2});
+  wear:{hat:0,outfit:0,skin:0},own:{hat:[0],outfit:[0],skin:[0]},traps:[],ver:2,avatar:{skin:0},nick:'',tutDone:false,q:0});
 let save=DEF();
 try{
   const s=JSON.parse(localStorage.getItem('fish-save')||'{}');
@@ -426,6 +445,8 @@ try{
   save.aq=Object.assign(DEF().aq,s.aq||{}); save.caught=s.caught||{};
   save.stats=Object.assign(DEF().stats,s.stats||{}); save.skills=s.skills||{};
   save.wear=Object.assign(DEF().wear,s.wear||{}); save.own=Object.assign(DEF().own,s.own||{});
+  save.avatar=Object.assign({skin:0},s.avatar||{}); save.nick=s.nick||''; save.q=s.q||0; save.tutDone=!!s.tutDone;
+  if(((s.lv||1)>1||Object.keys(s.caught||{}).length)&&s.tutDone===undefined){ save.tutDone=true; save.q=4; }   // 이미 하던 사람은 튜토리얼 생략
   const oldVer=(s.ver||1)<2;
   save.traps=Array.isArray(s.traps)?s.traps.filter(x=>TRAPS[x.tier]&&x.zone>=0&&x.zone<(oldVer?3:SPOTS.length)).map(x=>({tier:x.tier,zone:oldVer?[4,6,7][x.zone]:x.zone,fish:(x.fish||[]),acc:x.acc||0})):[];
   save.ver=2;
@@ -690,6 +711,7 @@ addEventListener('keydown',e=>{
   if(e.repeat) return;
   keys[e.code]=true;
   if(e.code==='Escape'){ if(menu) menu=null; else if(scene==='sea'&&state==='idle') returnHarbor(); return; }
+  if(menu==='title'&&(e.code==='Enter'||e.code==='Space')){ startGame(); return; }
   if(e.code==='KeyO'){ if(menu==='online'||menu==='visit') menu=null; else if(!menu&&!(scene==='sea'&&state!=='idle'&&state!=='result')){ menu='online'; if(onlineTab===1) loadRank(); } return; }
   if(e.code==='KeyH'){ if(menu==='help') menu=null; else if(!menu&&!(scene==='sea'&&state!=='idle'&&state!=='result')) menu='help'; return; }
   if(e.code==='KeyC'){ if(menu==='char') menu=null; else if(!menu&&!(scene==='sea'&&state!=='idle'&&state!=='result')) menu='char'; return; }
@@ -703,9 +725,9 @@ addEventListener('keyup',e=>{
   keys[e.code]=false;
   if(e.code==='Space'){ const was=holding; holding=false; if(was&&scene==='sea') release(); }
 });
-function cpos(e){ const r=cv.getBoundingClientRect(); return {x:(e.clientX-r.left-cv.clientLeft)*W/cv.clientWidth, y:(e.clientY-r.top-cv.clientTop)*H/cv.clientHeight}; }
-cv.addEventListener('pointermove',e=>Object.assign(mouse,cpos(e)));
-cv.addEventListener('pointerdown',e=>{
+function cpos(e){ return {x:(e.clientX*view.dpr-view.ox)/view.s, y:(e.clientY*view.dpr-view.oy)/view.s}; }
+sv.addEventListener('pointermove',e=>Object.assign(mouse,cpos(e)));
+sv.addEventListener('pointerdown',e=>{
   e.preventDefault(); Object.assign(mouse,cpos(e));
   for(let i=btns.length-1;i>=0;i--){ const b=btns[i];
     if(mouse.x>=b.x&&mouse.x<b.x+b.w&&mouse.y>=b.y&&mouse.y<b.y+b.h){ b.fn(); return; } }
@@ -724,6 +746,7 @@ function update(dt){
   save.aq.pend+=fishRate()/60*dt;
   advanceTraps(dt);
   mpTick(dt);
+  questTick();
   saveT+=dt; if(saveT>3){ saveT=0; persist(); }
 
   if(scene!=='sea'){ updatePlayer(dt); if(menu==='aqua'||menu==='visit') updateSwim(dt); return; }
@@ -914,7 +937,7 @@ function spotThumb(i,x,y){
 function drawMan(x,y,flip=false,cell=G,ov=null){
   const h=HATS[ov?ov.hat:save.wear.hat]||HATS[0], o=OUTFITS[ov?ov.outfit:save.wear.outfit]||OUTFITS[0];
   const rows=[...h.rows,...SP.man.slice(3)];
-  spr(rows,Object.assign({},MANPAL,o.pal,h.pal),x,y,cell,flip);
+  spr(rows,Object.assign({},MANPAL,o.pal,h.pal,{2:SKINTONES[ov&&ov.sk!==undefined?ov.sk:save.avatar.skin]||MANPAL[2]}),x,y,cell,flip);
   jobGear(x,y,cell,flip,ov?(JOBS[ov.job]?ov.job:'novice'):undefined);
 }
 
@@ -1904,6 +1927,7 @@ function menuHelp(){
     txt(v,k?250:250,y,18,'#ffffff','left','Galmuri9');
   });
   txt('닫기: X · H · Esc',60,452,18,'#8c93b0','left','Galmuri9');
+  button('튜토리얼 다시 보기',500,432,232,28,()=>{ menu='tutorial'; tutStep=0; },true,'#3a4a8a');
 }
 
 // ================= 그리기: 캐릭터 정보 =================
@@ -2058,7 +2082,11 @@ function draw(){
   if(menu==='help') menuHelp();
   if(menu==='online') menuOnline();
   if(menu==='visit') menuVisit();
+  if(menu==='title') menuTitle();
+  if(menu==='avatar') menuAvatar();
+  if(menu==='tutorial') menuTutorial();
   drawChatLog();
+  drawQuest();
   if(lvBanner){
     ctx.globalAlpha=Math.min(1,lvBanner.t);
     R(200,150,100,22,'#14213d'); R(204,154,98,20,'#ffd166'); R(208,158,96,18,'#fff8e1');
@@ -2096,7 +2124,7 @@ async function onUser(u){
   try{
     const ns=await FB.db.ref('users/'+u.uid+'/n').once('value');
     let nick=ns.val(); try{ nick=nick||localStorage.getItem('fish-nick'); }catch(e){}
-    mp.nick=nick||('낚시꾼'+String(Math.floor(1000+Math.random()*9000)));
+    mp.nick=nick||save.nick||('낚시꾼'+String(Math.floor(1000+Math.random()*9000)));
     try{ localStorage.setItem('fish-nick',mp.nick); }catch(e){}
     const cs=await FB.db.ref('saves/'+u.uid).once('value');
     if(cs.exists()){
@@ -2125,7 +2153,7 @@ function mpLogout(){ if(FB){ stopListen(); FB.auth.signOut(); } }
 function cloudPush(){ return FB.db.ref('saves/'+mp.user.uid).set(jstr(save)).catch(()=>{}); }
 function profileData(){
   return {n:mp.nick,lv:save.lv,job:save.job,dex:Object.keys(save.caught).length,shc:Object.keys(save.shinyCaught).length,
-    aq:save.aq.fish.slice(0,12).map(f=>[f.n,f.s,f.v,f.q,f.sh?1:0]),w:[save.wear.hat,save.wear.outfit,save.wear.skin],r:+fishRate().toFixed(1),t:SERVER()};
+    aq:save.aq.fish.slice(0,12).map(f=>[f.n,f.s,f.v,f.q,f.sh?1:0]),w:[save.wear.hat,save.wear.outfit,save.wear.skin,save.avatar.skin],r:+fishRate().toFixed(1),t:SERVER()};
 }
 function pushProfile(){ return FB.db.ref('users/'+mp.user.uid).set(profileData()).catch(()=>{}); }
 function listenMail(){
@@ -2143,7 +2171,7 @@ function detachScene(){
 function stopListen(){ detachScene(); if(mp.mailRef){ mp.mailRef.off(); mp.mailRef=null; } }
 function sendPresence(){
   if(!mp.presRef) return;
-  mp.presRef.set({n:mp.nick,x:Math.round(player.x),d:player.dir,h:save.wear.hat,o:save.wear.outfit,j:save.job,t:SERVER()}).catch(()=>{});
+  mp.presRef.set({n:mp.nick,x:Math.round(player.x),d:player.dir,h:save.wear.hat,o:save.wear.outfit,j:save.job,sk:save.avatar.skin,t:SERVER()}).catch(()=>{});
   mp.lastSend=Date.now(); mp.lastKey=Math.round(player.x)+'|'+player.dir;
 }
 function switchPresence(sc){
@@ -2187,8 +2215,7 @@ document.body.appendChild(ci);
 let inputCb=null;
 function openInput(ph,cb,max=60){
   ci.placeholder=ph; ci.maxLength=max; ci.value='';
-  const r=cv.getBoundingClientRect();
-  ci.style.left=(r.left+r.width/2)+'px'; ci.style.top=(r.bottom-64)+'px'; ci.style.transform='translateX(-50%)'; ci.style.display='block';
+  ci.style.left=(innerWidth/2)+'px'; ci.style.top=Math.round((view.oy+(H-64)*view.s)/view.dpr)+'px'; ci.style.transform='translateX(-50%)'; ci.style.display='block';
   inputCb=cb; keys={}; holding=false; ci.focus();
 }
 function closeInput(){ ci.style.display='none'; ci.blur(); inputCb=null; }
@@ -2209,14 +2236,122 @@ function drawOthers(feet){
     if(!fresh(p)) continue;
     p.cx+=(p.x-p.cx)*0.2;
     const mv=Math.abs(p.x-p.cx)>2, top=feet-56-((mv&&Math.floor(t*8)%2)?4:0);
-    drawMan(p.cx-20,top,p.d<0,G,{hat:p.h|0,outfit:p.o|0,job:p.j});
+    drawMan(p.cx-20,top,p.d<0,G,{hat:p.h|0,outfit:p.o|0,job:p.j,sk:p.sk|0});
     nameTag(p.n||'?',p.cx,feet+18,'#cfe8ff'); chatBubble(uid,p.cx,top);
   }
   nameTag(mp.nick,player.x,feet+18,'#ffd166'); chatBubble(mp.user.uid,player.x,feet-56);
 }
 function drawChatLog(){
   if(!FB||!mp.user||!mp.presScene||menu) return;
-  mp.chat.slice(-5).forEach((m,i)=>{ ctx.globalAlpha=nowS()-m.t>20000?.5:.95; txt(`${m.n}: ${m.m}`,14,66+i*24,18,m.u===mp.user.uid?'#ffd166':'#ffffff','left','Galmuri9'); ctx.globalAlpha=1; });
+  mp.chat.slice(-5).forEach((m,i)=>{ ctx.globalAlpha=nowS()-m.t>20000?.5:.95; txt(`${m.n}: ${m.m}`,14,100+i*24,18,m.u===mp.user.uid?'#ffd166':'#ffffff','left','Galmuri9'); ctx.globalAlpha=1; });
+}
+// ================= 시작 화면 · 캐릭터 설정 · 튜토리얼 · 목표 안내 =================
+let avatarFrom='title', tutStep=0, qGold=0;
+const guestNick=()=>save.nick||mp.nick||'낚시꾼';
+function setNick(v){
+  const n=(v||'').trim().slice(0,12); if(!n) return;
+  save.nick=n; persist();
+  if(mp.user){ mp.nick=n; try{ localStorage.setItem('fish-nick',n); }catch(e){} pushProfile(); if(mp.presRef) sendPresence(); }
+  say('닉네임: '+n);
+}
+function startGame(){ menu=null; beep(660,.08,'triangle'); if(!save.tutDone){ menu='tutorial'; tutStep=0; } }
+function menuTitle(){
+  R(0,0,200,125,'#0a1030',.62);
+  for(let i=0;i<4;i++){ const f=FISH[(i*9+3)%FISH.length], x=((t*20*(i%2?1:-1)+i*230)%900+900)%900-50; drawFish({n:f.n,s:0,v:0,q:0,sh:0},x,70+i*30+Math.sin(t+i)*6,2,i%2===1,.55); }
+  txt('도트 낚시 마을',W/2,132,48,'#ffd166','center');
+  txt('낚시하고 · 키우고 · 함께 노는 마을',W/2,166,18,'#bcd','center','Galmuri9');
+  R(W/2-52,184,26,34,'#14213d',.55); drawMan(W/2-40,194,false,8);
+  txt(guestNick(),W/2,330,18,'#ffd166','center','Galmuri9');
+  button('시작하기',W/2-130,348,260,48,startGame,true,'#2a9d8f');
+  button('캐릭터 설정',W/2-250,412,160,40,()=>{ avatarFrom='title'; menu='avatar'; },true,'#6a4c93');
+  button(mp.user?'로그인됨':'구글 로그인',W/2-80,412,160,40,mpLogin,!mp.user&&!!FB,mp.user?'#4a4f66':'#e07a1f');
+  button('튜토리얼',W/2+90,412,160,40,()=>{ menu='tutorial'; tutStep=0; },true,'#3a4a8a');
+  txt(mp.user?`온라인: ${mp.nick}`:(FB?'로그인하면 이어하기·랭킹·거래를 쓸 수 있어요 (건너뛰어도 돼요)':'오프라인 모드'),W/2,482,18,'#8c93b0','center','Galmuri9');
+}
+function menuAvatar(){
+  panel('캐릭터 설정');
+  card(60,108,236,276);
+  R(84,124,47,40,'#2a3a6a'); drawMan(178-40,146,false,8);
+  txt(guestNick(),178,298,22,'#ffd166','center');
+  button('닉네임 바꾸기',90,322,176,38,()=>openInput('닉네임 (최대 12자)',setNick,12));
+  txt('온라인에서 보여요',178,372,18,'#8c93b0','center','Galmuri9');
+  txt('피부색',320,132,18,'#8ecae6','left','Galmuri9');
+  SKINTONES.forEach((c,i)=>{ const x=320+i*58,y=144, on=save.avatar.skin===i;
+    R(x,y,13,13,on?'#ffd166':'#0b1020'); R(x+4,y+4,11,11,c);
+    btns.push({x,y,w:52,h:52,fn:()=>{ save.avatar.skin=i; persist(); if(mp.presRef) sendPresence(); }}); });
+  const pick=(kind,list,title,y0)=>{
+    txt(title,320,y0,18,'#8ecae6','left','Galmuri9');
+    list.map((it,i)=>i).filter(i=>list[i].price===0||save.own[kind].includes(i)).forEach((i,k)=>{
+      const x=320+(k%3)*140, y=y0+12+Math.floor(k/3)*44, on=save.wear[kind]===i;
+      button(list[i].n,x,y,132,36,()=>{ if(!save.own[kind].includes(i)) save.own[kind].push(i); save.wear[kind]=i; B=bonus(); persist(); if(mp.presRef) sendPresence(); },true,on?'#e07a1f':'#3a4a8a');
+    });
+  };
+  pick('hat',HATS,'모자',230); pick('outfit',OUTFITS,'옷',322);
+  button('완료',60,396,236,44,()=>{ menu=avatarFrom==='title'?'title':null; },true,'#2a9d8f');
+  txt('옷가게에서 더 많은 모자·옷을 살 수 있어요',320,424,18,'#8c93b0','left','Galmuri9');
+}
+const TUT=[
+ ['어서 와요, 낚시꾼!',['여기는 낚시 마을이에요.','낚시로 물고기를 잡아 팔고,','수족관과 통발로 키워 보세요!'],'hello'],
+ ['걸어 다니기',['← → 또는 A D 로 걸어요.','건물 문 앞에서 E 로 들어가요.','마을 오른쪽 끝 = 항구','마을 왼쪽 끝 = 강가'],'keys'],
+ ['배 타고 나가기',['항구의 배 앞에서 E 를 눌러요.','낚시터를 고르면 출항!','처음엔 갯벌·연안이 좋아요.'],'boat'],
+ ['낚시하기',['스페이스(마우스)를 꾹 눌렀다','떼면 낚싯줄을 던져요.','! 가 뜨면 바로 클릭!','릴링은 누르고 있어 초록 바를','물고기에 맞춰요.'],'cast'],
+ ['돈 벌기',['잡은 물고기는 생선 가게에서','팔아요. 수족관에 넣으면','알아서 돈을 벌어 줘요.','통발은 접속 안 해도','물고기를 모아 줘요.'],'coin'],
+ ['더 알아보기',['C   낚시꾼 정보 (스탯·도감)','H   도움말','O   온라인 (랭킹·거래소)','Enter   채팅','행운을 빌어요!'],'keys2'],
+];
+function keycap(label,x,y,w=44){
+  R(x,y,w/4,11,'#0b1020'); R(x+4,y+4,w/4-2,8,'#f1f5f9'); R(x+4,y+36,w/4-2,1,'#b8c4d0');
+  boardText(label,x+w/2,y+30,'#14213d');
+}
+function tutArt(kind,cx,cy){
+  if(kind==='hello'){
+    const rows=SP.man.map((r,j)=>j===5?"..kwwwwk..":r);
+    spr(rows,Object.assign({},MANPAL,{1:'#6a994e',3:'#6c757d',4:'#8d99ae'}),cx-40,cy-48,8);
+    drawFish({n:'붕어',s:0,v:0,q:0,sh:0},cx+30,cy-86+Math.sin(t*3)*6,3);
+  } else if(kind==='keys'){
+    keycap('←',cx-52,cy-92); keycap('→',cx+8,cy-92); keycap('A',cx-52,cy-36); keycap('D',cx+8,cy-36); keycap('E',cx-22,cy+24,44);
+    boardText('걷기',cx,cy-100,'#bcd'); boardText('들어가기',cx,cy+90,'#bcd');
+  } else if(kind==='boat'){
+    R(cx-100,cy+28,50,1,'#3aa7de',.6);
+    drawBoat(cx-96,cy+20,0); drawMan(cx-72,cy-36,false,4);
+    boardText('E',cx+62,cy-40,'#ffd166'); spr(SP.bang,null,cx+54,cy-86,4);
+  } else if(kind==='cast'){
+    R(cx-100,cy+36,50,1,'#3aa7de',.7);
+    spr(SP.bobber,null,cx-10,cy+16,6); spr(SP.bang,null,cx-8,cy-70,6);
+    R(cx+60,cy-70,6,40,'#14213d'); R(cx+64,cy-34+(Math.sin(t*3)*8|0),4,9,'#80ed99');
+    boardText('꾹 눌렀다 떼기',cx,cy+92,'#bcd');
+  } else if(kind==='coin'){
+    disc(cx/4-4,cy/4-6,7,'#e9a30b'); disc(cx/4-4,cy/4-6,5,'#ffd166'); boardText('$',cx-16,cy-14,'#8a5a0b');
+    drawFish({n:'참치',s:0,v:0,q:0,sh:0},cx+18,cy+30,3); drawFish({n:'게',s:0,v:0,q:0,sh:0},cx-70,cy+40,3);
+  } else {
+    keycap('C',cx-84,cy-30); keycap('H',cx-22,cy-30); keycap('O',cx+40,cy-30); boardText('정보 · 도움말 · 온라인',cx,cy+50,'#bcd');
+  }
+}
+function finishTut(){ save.tutDone=true; persist(); menu=null; say('목표를 따라가 보세요!',3); beep(880,.1,'triangle'); }
+function menuTutorial(){
+  panel('튜토리얼');
+  const s=TUT[tutStep];
+  card(60,108,240,252); card(312,108,420,252);
+  tutArt(s[2],180,234);
+  txt(s[0],332,146,22,'#ffd166');
+  s[1].forEach((l,i)=>txt(l,332,190+i*34,18,'#ffffff','left','Galmuri9'));
+  for(let i=0;i<TUT.length;i++) R(W/2-TUT.length*8+i*16,376,2,2,i===tutStep?'#ffd166':'#3a4a8a');
+  button('이전',60,404,120,40,()=>{ tutStep--; },tutStep>0,'#3a4a8a');
+  button('건너뛰기',W/2-60,404,120,40,finishTut,true,'#6a4c93');
+  button(tutStep===TUT.length-1?'시작!':'다음',612,404,120,40,()=>{ if(tutStep===TUT.length-1) finishTut(); else tutStep++; },true,'#2a9d8f');
+}
+const QTXT=['항구로 가요! 마을 오른쪽 끝으로 걸어가세요','항구의 배 앞에서 E 를 눌러 출항하세요','스페이스를 꾹 눌렀다 떼서 낚싯줄을 던지세요','물고기를 팔아 보세요! (마을 생선 가게)'];
+function questTick(){
+  if(save.q>=4) return;
+  if(save.q<1&&scene==='harbor') save.q=1;
+  if(save.q<2&&scene==='sea') save.q=2;
+  if(save.q===2&&Object.keys(save.caught).length>0){ save.q=3; qGold=save.gold; persist(); }
+  if(save.q===3&&save.gold>qGold){ save.q=4; save.gold+=50; persist(); say('목표 완료! 보너스 +50골드',3.5); [660,880,1100].forEach((f,i)=>setTimeout(()=>beep(f,.12,'triangle'),i*100)); }
+}
+function drawQuest(){
+  if(save.q>=4||menu||!save.tutDone) return;
+  const s='▶ 목표: '+QTXT[save.q]; ctx.font='18px Galmuri9, sans-serif';
+  const w=Math.ceil((ctx.measureText(s).width+28)/4)*4;
+  R(8,44,w/4,7,'#14213d',.85); txt(s,20,66,18,'#ffd166','left','Galmuri9');
 }
 // ---- 온라인 메뉴
 function menuOnline(){
@@ -2316,7 +2451,7 @@ function menuVisit(){
   txt(`도감 ${v.dex}/${FISH.length}`,576,190,18,'#bcd','left','Galmuri9');
   txt(`이로치 ${v.shc}종`,576,218,18,'#ffd166','left','Galmuri9');
   txt(`수익 +${v.r||0}/분`,576,246,18,'#8ecae6','left','Galmuri9');
-  if(v.w){ drawMan(676,116,false,3,{hat:v.w[0]|0,outfit:v.w[1]|0,job:v.job}); }
+  if(v.w){ drawMan(676,116,false,3,{hat:v.w[0]|0,outfit:v.w[1]|0,job:v.job,sk:v.w[3]|0}); }
   txt('이 수족관의 물고기들이에요',60,342,18,'#bcd','left','Galmuri9');
 }
 // ---- 거래소
@@ -2398,12 +2533,12 @@ function tabMarket(){
 let last=performance.now();
 function loop(now){
   const dt=Math.min(0.05,(now-last)/1000); last=now;
-  update(dt); draw(); requestAnimationFrame(loop);
+  update(dt); draw(); blit(); requestAnimationFrame(loop);
 }
 syncSwim();
 advanceTraps(OFFLINE_SEC);
 mpInit();
-if(!save.helpSeen){ menu='help'; save.helpSeen=true; persist(); }
+menu='title'; save.helpSeen=true;
 requestAnimationFrame(loop);
 addEventListener('beforeunload',persist);
 </script>
